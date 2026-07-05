@@ -83,4 +83,56 @@ export const reviewRouter = createTRPCRouter({
         });
       }
     }),
+
+  /**
+   * Retrieves the latest AI review for a Pull Request.
+   */
+  getLatestReview: protectedProcedure
+    .input(z.object({ pullRequestId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      // Load PR and verify ownership
+      const pr = await ctx.db.query.pullRequests.findFirst({
+        where: eq(pullRequests.id, input.pullRequestId),
+        with: { repository: true },
+      });
+
+      if (!pr) throw new TRPCError({ code: "NOT_FOUND", message: "Pull request not found." });
+      if (pr.repository.userId !== ctx.session.user.id) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Access denied." });
+      }
+
+      // Fetch the newest review using the created_at index
+      const latestReview = await ctx.db.query.reviews.findFirst({
+        where: eq(reviews.pullRequestId, input.pullRequestId),
+        orderBy: (r, { desc }) => [desc(r.createdAt)],
+      });
+
+      return latestReview ?? null;
+    }),
+
+  /**
+   * Retrieves all historical AI reviews for a Pull Request, sorted newest to oldest.
+   */
+  getReviewHistory: protectedProcedure
+    .input(z.object({ pullRequestId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      // Load PR and verify ownership
+      const pr = await ctx.db.query.pullRequests.findFirst({
+        where: eq(pullRequests.id, input.pullRequestId),
+        with: { repository: true },
+      });
+
+      if (!pr) throw new TRPCError({ code: "NOT_FOUND", message: "Pull request not found." });
+      if (pr.repository.userId !== ctx.session.user.id) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Access denied." });
+      }
+
+      // Fetch all reviews ordered by created_at DESC
+      const history = await ctx.db.query.reviews.findMany({
+        where: eq(reviews.pullRequestId, input.pullRequestId),
+        orderBy: (r, { desc }) => [desc(r.createdAt)],
+      });
+
+      return history;
+    }),
 });
