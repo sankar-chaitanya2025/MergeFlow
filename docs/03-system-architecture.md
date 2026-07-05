@@ -7,130 +7,151 @@
 
 ## 1. Purpose
 
-Define how MergeFlow works as a system: components, boundaries, flows, failure
-modes, deployment, and scaling strategy. This is the single source of truth
-for implementation.
+Define how MergeFlow works as a system. This document is the single source of
+truth for implementation — every component, flow, boundary, and failure mode is
+specified here.
 
 ## 2. Scope
 
-**Covered:** System topology, component architecture, sequence diagrams for all
-critical flows, trust boundaries, failure handling, deployment, ADRs.
+**Covered:** System topology, C4 diagrams (Levels 1–3), sequence diagrams,
+trust boundaries, failure architecture, deployment, scaling, ADRs.
 
 **Excluded:** Database schema (04), API contracts (06), AI methodology (08).
 
 ---
 
-## 3. High-Level Architecture
+## 3. Architectural Principles
 
-MergeFlow is a **monolithic full-stack web application** backed by a single
-PostgreSQL database and two external services (GitHub API, AI Provider API).
+Derived from `00-project-overview.md` and applied to system design.
 
+| Principle | Application |
+|-----------|------------|
+| P1: Simplicity | Monolithic deployment. No distributed coordination. |
+| P2: Modularity | Domain modules with stable interfaces. Implementation varies. |
+| P4: Explicit Boundaries | Trust boundaries, failure boundaries, domain boundaries all documented. |
+| P5: Provider-Agnostic AI | Anti-corruption layer. AI provider is a pluggable dependency. |
+| P6: Extension over Prediction | Interfaces designed for future capability. MVP implements the simplest version. |
+
+**Core Architectural Pattern:**
+
+> Design the interface for the general case. Implement for the MVP case.
+> The interface must remain stable as the implementation evolves.
+
+---
+
+## 4. C4 Level 1 — System Context
+
+```mermaid
+C4Context
+    title MergeFlow — System Context (C4 Level 1)
+
+    Person(user, "Developer", "Reviews pull requests using MergeFlow")
+
+    System(mergeflow, "MergeFlow", "AI-powered PR analysis workspace")
+
+    System_Ext(github, "GitHub", "Source code hosting, OAuth provider, PR data source")
+    System_Ext(ai, "AI Provider", "LLM service: OpenAI, Anthropic, Gemini, or self-hosted")
+
+    Rel(user, mergeflow, "Authenticates, manages repos, triggers sync and analysis", "HTTPS")
+    Rel(mergeflow, github, "OAuth flow, repository listing, PR data, diffs", "HTTPS/REST")
+    Rel(mergeflow, ai, "Structured completions for PR analysis", "HTTPS/REST")
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      Client (Browser)                   │
-└──────────────────────────┬──────────────────────────────┘
-                           │ HTTPS
-┌──────────────────────────▼──────────────────────────────┐
-│                   MergeFlow Application                  │
-│                                                          │
-│  ┌─────────────┐  ┌─────────────┐  ┌────────────────┐  │
-│  │   Web Layer  │  │  API Layer  │  │ Domain Layer   │  │
-│  │  (SSR + UI)  │  │ (Endpoints) │  │ (Business Logic│  │
-│  └──────┬──────┘  └──────┬──────┘  │  per domain)   │  │
-│         │                │          └───────┬────────┘  │
-│         └────────┬───────┘                  │           │
-│                  │                          │           │
-│         ┌────────▼──────────────────────────▼────────┐  │
-│         │            Data Access Layer                │  │
-│         └────────────────────┬───────────────────────┘  │
-└──────────────────────────────┼──────────────────────────┘
-                               │
-          ┌────────────────────┼────────────────────┐
-          │                    │                    │
-  ┌───────▼──────┐   ┌────────▼───────┐  ┌────────▼────────┐
-  │  PostgreSQL   │   │   GitHub API   │  │  AI Provider    │
-  │  (Primary DB) │   │   (External)   │  │  (External)     │
-  └──────────────┘   └────────────────┘  └─────────────────┘
+
+### External Systems
+
+| System | Role | Protocol | Auth | Rate Limits | Failure Impact |
+|--------|------|----------|------|-------------|----------------|
+| **GitHub OAuth** | User authentication | HTTPS | Client ID + Secret | N/A | Cannot sign in |
+| **GitHub REST API** | Repos, PRs, diffs | HTTPS | User OAuth token | 5,000 req/hr per user | Sync degrades/fails |
+| **AI Provider** | PR analysis | HTTPS | API key | Provider-specific | Analysis fails, app continues |
+
+### ADR-004: GitHub OAuth App (MVP)
+
+| | |
+|--|--|
+| **Context** | Two integration models: OAuth App (user tokens) or GitHub App (installation tokens). |
+| **Decision** | OAuth App for MVP. User's own token for API calls. |
+| **Alternatives** | GitHub App — better rate limits, fine-grained permissions, webhook support. Requires installation flow and webhook endpoint. |
+| **Consequences** | Simpler auth flow. Rate limits per-user (sufficient for MVP: 50 repos). Cannot receive webhooks. |
+| **Reversible?** | Yes. Auth module abstracts token source. Downstream domains unaffected. |
+
+---
+
+## 5. C4 Level 2 — Container Diagram
+
+```mermaid
+C4Container
+    title MergeFlow — Container Diagram (C4 Level 2)
+
+    Person(user, "Developer")
+
+    System_Boundary(mergeflow, "MergeFlow") {
+        Container(web, "Web Application", "Full-stack framework", "SSR pages, API endpoints, domain logic, background job execution")
+        ContainerDb(db, "PostgreSQL", "Relational DB", "Users, repos, PRs, reviews, sessions, jobs")
+    }
+
+    System_Ext(github, "GitHub API")
+    System_Ext(ai, "AI Provider API")
+
+    Rel(user, web, "Uses", "HTTPS")
+    Rel(web, db, "Reads/writes", "TCP/TLS")
+    Rel(web, github, "OAuth, repos, PRs, diffs", "HTTPS")
+    Rel(web, ai, "Completions", "HTTPS")
 ```
 
 ### ADR-001: Monolithic Architecture
 
 | | |
 |--|--|
-| **Context** | MVP targets individual developers and small teams. Constraint C7 mandates no distributed services. |
-| **Decision** | Single deployable unit containing UI, API, and business logic. |
-| **Alternatives** | (a) Microservices — premature for MVP scale. (b) Backend + SPA — adds deployment complexity. (c) Serverless functions — cold starts degrade UX for sync/AI calls. |
-| **Consequences** | Simpler deployment, debugging, and testing. All domains share one process. Scaling is vertical initially. |
-| **Reversible?** | Yes. Domain boundaries from 02 ensure modules can be extracted into services later. The domain interfaces become service contracts. |
+| **Context** | MVP targets individuals and small teams. C7: no distributed services in MVP. |
+| **Decision** | Single deployable unit: UI + API + domain logic + job execution. |
+| **Alternatives** | (a) Microservices — premature. (b) Backend + SPA — deployment complexity. (c) Serverless — cold starts degrade sync/AI UX. |
+| **Consequences** | Single process. Simple deployment and debugging. Vertical scaling initially. |
+| **Reversible?** | Yes. Domain boundaries (02) ensure modules extract into services. Interfaces become service contracts. |
 
----
-
-## 4. Container Diagram
-
-```mermaid
-C4Context
-    title MergeFlow System Context
-
-    Person(user, "Developer", "Reviews PRs using MergeFlow")
-
-    System(mergeflow, "MergeFlow", "AI-powered PR analysis workspace")
-
-    System_Ext(github, "GitHub", "Source code hosting, OAuth, PR data")
-    System_Ext(ai, "AI Provider", "LLM API: OpenAI, Anthropic, or Gemini")
-
-    Rel(user, mergeflow, "Uses", "HTTPS")
-    Rel(mergeflow, github, "OAuth, Repos API, PRs API", "HTTPS")
-    Rel(mergeflow, ai, "Completions API", "HTTPS")
-```
-
-### Internal Containers
-
-| Container | Responsibility | Technology Decision |
-|-----------|---------------|---------------------|
-| **Web Layer** | Server-side rendering, static assets, client hydration | Full-stack framework with SSR |
-| **API Layer** | Type-safe endpoints, request validation, auth middleware | RPC-style API (not REST — see ADR below) |
-| **Domain Layer** | Business logic organized by bounded context | Pure functions + domain services per 02 |
-| **Data Access Layer** | ORM queries, migrations, connection pooling | Type-safe ORM with PostgreSQL |
-| **PostgreSQL** | Primary persistence for all entities | Single database, schema per 04 |
-
-### ADR-001b: RPC-Style API over REST
+### ADR-001b: RPC-Style API
 
 | | |
 |--|--|
-| **Context** | MergeFlow is a single full-stack app. The API serves only its own UI. |
-| **Decision** | RPC-style type-safe API (procedures: commands + queries) rather than REST. |
-| **Alternatives** | REST — better for public APIs, but MergeFlow's API is internal. GraphQL — unnecessary complexity for this data model. |
-| **Consequences** | End-to-end type safety. No URL design overhead. Procedures map 1:1 to domain commands/queries from 02. Not suitable if external API consumers are needed later. |
-| **Reversible?** | Yes. Domain layer is transport-agnostic. Adding a REST or GraphQL layer on top is additive. |
+| **Context** | API serves only its own UI. No external consumers in MVP. |
+| **Decision** | RPC-style type-safe procedures (commands + queries) over REST. |
+| **Alternatives** | REST — better for public APIs. GraphQL — unnecessary complexity. |
+| **Consequences** | End-to-end type safety. Procedures map 1:1 to domain commands/queries. Not suitable for external consumers. |
+| **Reversible?** | Yes. Domain layer is transport-agnostic. REST/GraphQL layer is additive. |
 
 ---
 
-## 5. Component Architecture
+## 6. C4 Level 3 — Component Diagram
 
 ```mermaid
 graph TB
     subgraph "Web Layer"
-        PAGES[Pages / Routes]
+        PAGES[Pages / Routes<br/>SSR + Client Hydration]
         COMPONENTS[UI Components]
     end
 
     subgraph "API Layer"
-        MW[Auth Middleware]
-        ROUTER[API Router]
+        MW[Auth Middleware<br/>Session validation]
+        ROUTER[API Router<br/>Command + Query dispatch]
     end
 
     subgraph "Domain Layer"
-        AUTH[Auth Module]
-        REPO[Repository Module]
-        PRS[Pull Request Module]
-        REVW[Review Module]
-        DASHM[Dashboard Module]
+        AUTH[Auth Module<br/>OAuth, sessions, tokens]
+        REPO[Repository Module<br/>Connections, metadata]
+        PRS[Pull Request Module<br/>Sync, lifecycle]
+        REVW[Review Module<br/>AI analysis, history]
+        DASHM[Dashboard Module<br/>Aggregation, filtering]
     end
 
-    subgraph "Infrastructure"
+    subgraph "Job Layer"
+        JOBQ[Job Dispatcher<br/>Accepts async work]
+        JOBX[Job Executor<br/>Processes jobs]
+    end
+
+    subgraph "Infrastructure Layer"
         DB[(PostgreSQL)]
-        GHCLIENT[GitHub API Client]
-        AICLIENT[AI Provider Client]
+        GHCLIENT[GitHub API Client<br/>REST calls, rate tracking]
+        AICLIENT[AI Provider Client<br/>Anti-corruption layer]
     end
 
     PAGES --> ROUTER
@@ -142,6 +163,12 @@ graph TB
     MW --> REVW
     MW --> DASHM
 
+    PRS --> JOBQ
+    REVW --> JOBQ
+    JOBQ --> JOBX
+    JOBX --> PRS
+    JOBX --> REVW
+
     AUTH --> DB
     REPO --> DB
     REPO --> GHCLIENT
@@ -150,212 +177,233 @@ graph TB
     REVW --> DB
     REVW --> AICLIENT
     DASHM --> DB
+    JOBQ --> DB
+    JOBX --> DB
 ```
 
 ### Layer Rules
 
-| Rule | Rationale |
-|------|-----------|
-| Web Layer → API Layer only | UI never calls domain or database directly |
-| API Layer → Domain Layer only | API handles auth/validation, delegates to domains |
-| Domain Layer → Infrastructure only | Business logic depends on abstractions, not HTTP clients |
-| No lateral dependencies between domain modules | Enforced by 02 §6 communication rules |
-| Infrastructure has no upstream dependencies | Clients/DB are injected, not imported by layers above |
+| Rule | Enforcement |
+|------|------------|
+| Web → API only | Pages never call domain or DB directly |
+| API → Domain only | API validates + delegates. No business logic. |
+| Domain → Infrastructure only | Business logic depends on abstractions |
+| Domain → Job Layer for async work | Domains submit jobs; never execute long-running work inline |
+| No lateral domain imports | Per 02 §6 communication rules |
+| Infrastructure has no upstream deps | Clients/DB are injected |
 
 ---
 
-## 6. Trust Boundaries
+## 7. Trust Boundaries
 
 ```
-┌─ UNTRUSTED ──────────────────────────────────────────────────┐
-│  Browser (client-side code, user input)                      │
-└──────────────────────────┬───────────────────────────────────┘
-                           │ HTTPS (TLS)
-┌─ TRUSTED ────────────────▼───────────────────────────────────┐
-│  MergeFlow Server                                            │
-│  ┌─ SEMI-TRUSTED ─────────────────────────────────────────┐  │
-│  │  GitHub API Responses (external, could be malformed)    │  │
-│  │  AI Provider Responses (external, could be malformed)   │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│  ┌─ TRUSTED ──────────────────────────────────────────────┐  │
-│  │  PostgreSQL (internal, encrypted connection)            │  │
-│  └─────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────┘
+┌─ UNTRUSTED ─────────────────────────────────────────────────────┐
+│  Browser                                                        │
+│  • Client-side code (can be tampered)                           │
+│  • User input (must be validated)                               │
+│  • Session cookie (must be verified server-side)                │
+└────────────────────────┬────────────────────────────────────────┘
+                         │ HTTPS / TLS
+┌─ TRUST BOUNDARY 1 ────▼────────────────────────────────────────┐
+│  MergeFlow Server (Trusted)                                    │
+│                                                                 │
+│  ┌─ TRUST BOUNDARY 2 ────────────────────────────────────────┐ │
+│  │  GitHub API Responses (Semi-Trusted)                       │ │
+│  │  • Structurally valid but content is external              │ │
+│  │  • Must validate schema, handle unexpected fields          │ │
+│  │  • Rate limit headers must be respected                    │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌─ TRUST BOUNDARY 3 ────────────────────────────────────────┐ │
+│  │  AI Provider Responses (Semi-Trusted)                      │ │
+│  │  • Structurally unpredictable (LLM output)                 │ │
+│  │  • Must validate against expected schema                   │ │
+│  │  • Must sanitize before persistence                        │ │
+│  │  • Must reject and fail gracefully on invalid output       │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌─ TRUSTED ─────────────────────────────────────────────────┐ │
+│  │  PostgreSQL (Fully Trusted)                                │ │
+│  │  • Internal, encrypted connection                          │ │
+│  │  • Parameterized queries via ORM                           │ │
+│  └────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-| Boundary | Validation Required |
-|----------|-------------------|
-| Browser → Server | Session validation, input sanitization, CSRF protection |
-| Server → GitHub API | Response schema validation, error handling, rate limit handling |
-| Server → AI Provider | Response schema validation, structured output parsing, timeout handling |
-| Server → PostgreSQL | Parameterized queries (ORM handles), connection encryption |
+### Validation Requirements per Boundary
 
----
-
-## 7. External Systems
-
-| System | Protocol | Auth Method | Rate Limits | Failure Mode |
-|--------|----------|-------------|-------------|--------------|
-| **GitHub OAuth** | HTTPS | Client ID + Secret | N/A | User cannot sign in |
-| **GitHub REST API** | HTTPS | User's OAuth token | 5,000 req/hr per user | Sync degrades or fails |
-| **AI Provider** | HTTPS | API key | Varies by provider/tier | Analysis fails, app continues |
-
-### ADR-004: GitHub OAuth over GitHub App (MVP)
-
-| | |
-|--|--|
-| **Context** | Two options for GitHub integration: OAuth App (user tokens) or GitHub App (installation tokens). |
-| **Decision** | OAuth App for MVP. User's own token for API calls. |
-| **Alternatives** | GitHub App — better rate limits (5,000/hr per installation), fine-grained permissions, webhook support. But requires installation flow, webhook endpoint, and more complex token management. |
-| **Consequences** | Simpler auth flow. Rate limits are per-user (sufficient for MVP capacity of 50 repos). Cannot receive webhooks. |
-| **Reversible?** | Yes. Migration to GitHub App is additive. Auth module handles the token source — downstream domains don't care where the token came from. |
+| Boundary | Validations |
+|----------|-------------|
+| Browser → Server | Session cookie verification. Input type/length validation. CSRF protection. |
+| Server → GitHub | HTTP status handling. Response schema validation. Pagination handling. Rate limit tracking. |
+| Server → AI Provider | Response schema validation. Structured output parsing. Timeout enforcement. Content sanitization. |
+| Server → PostgreSQL | Parameterized queries (ORM). Connection encryption. Pool management. |
 
 ---
 
 ## 8. Sequence Diagrams
 
-### 8.1 Authentication Flow
+### 8.1 Authentication
 
 ```mermaid
 sequenceDiagram
     actor User
     participant Browser
-    participant Server as MergeFlow Server
+    participant Server as MergeFlow
     participant GitHub as GitHub OAuth
 
     User->>Browser: Click "Sign in with GitHub"
     Browser->>Server: GET /auth/github
-    Server->>Browser: Redirect to GitHub OAuth URL
+    Server->>Browser: 302 Redirect to GitHub
     Browser->>GitHub: Authorization request
     GitHub->>User: Consent screen
     User->>GitHub: Authorize
-    GitHub->>Browser: Redirect with auth code
+    GitHub->>Browser: 302 Redirect with code
     Browser->>Server: GET /auth/callback?code=xxx
-    Server->>GitHub: Exchange code for access token
+    Server->>GitHub: POST /access_token (exchange code)
     GitHub-->>Server: Access token
-    Server->>Server: Upsert user record
-    Server->>Server: Encrypt + store token
-    Server->>Server: Create session
-    Server->>Browser: Set session cookie, redirect to dashboard
+    Server->>Server: Upsert User (by GitHub ID)
+    Server->>Server: Encrypt + persist token
+    Server->>Server: Create session record
+    Server->>Browser: Set session cookie → redirect to Dashboard
 ```
 
-### ADR-003: Session-Based Auth over JWT
+### ADR-003: Server-Side Sessions
 
 | | |
 |--|--|
-| **Context** | Need to maintain authenticated state across requests. |
-| **Decision** | Server-side sessions with encrypted cookies. |
-| **Alternatives** | JWT — stateless, but can't revoke. Token stored in cookie is simpler and revocable. |
-| **Consequences** | Sessions stored in database. Logout invalidates immediately. Slight overhead per request for session lookup. |
-| **Reversible?** | Yes. Session interface is internal to Auth module. |
+| **Context** | Need authenticated state across requests. |
+| **Decision** | Server-side sessions with encrypted HTTP-only cookies. |
+| **Alternatives** | JWT — stateless but irrevocable. |
+| **Consequences** | Sessions stored in DB. Immediate logout. Slight lookup overhead per request. |
+| **Reversible?** | Yes. Session interface internal to Auth module. |
 
-### 8.2 Repository Connection Flow
+### 8.2 Repository Connection
 
 ```mermaid
 sequenceDiagram
     actor User
     participant Browser
-    participant Server as MergeFlow Server
+    participant Server as MergeFlow
     participant GitHub as GitHub API
 
-    User->>Browser: Navigate to Repositories page
+    User->>Browser: Navigate to Repositories
     Browser->>Server: Query: ListAccessibleRepos
-    Server->>Server: Validate session, get GitHub token
+    Server->>Server: Validate session → get GitHub token
     Server->>GitHub: GET /user/repos (paginated)
     GitHub-->>Server: Repository list
     Server->>Server: Mark already-connected repos
-    Server-->>Browser: Repo list with connection status
+    Server-->>Browser: Repos with connection status
 
-    User->>Browser: Select repos, click Connect
-    Browser->>Server: Command: ConnectRepositories(repoIds)
+    User->>Browser: Select repos → Connect
+    Browser->>Server: Command: ConnectRepositories([repoIds])
     Server->>Server: Validate session
-    Server->>Server: Persist connections
-    Server-->>Browser: Success
+    Server->>Server: Persist connections (idempotent)
+    Server-->>Browser: Connected repos
 ```
 
-### 8.3 Pull Request Synchronization Flow
+### 8.3 Pull Request Synchronization
 
 ```mermaid
 sequenceDiagram
     actor User
     participant Browser
-    participant Server as MergeFlow Server
+    participant Server as MergeFlow
+    participant JobLayer as Job Layer
     participant GitHub as GitHub API
     participant DB as PostgreSQL
 
     User->>Browser: Click "Sync"
     Browser->>Server: Command: SyncPullRequests(repoIds?)
     Server->>Server: Validate session
-    Server->>DB: Get connected repos
+    Server->>JobLayer: Dispatch SyncJob(userId, repoIds)
     
-    loop For each connected repo
-        Server->>GitHub: GET /repos/{owner}/{repo}/pulls?state=open
-        GitHub-->>Server: Open PRs
-        Server->>GitHub: GET /repos/{owner}/{repo}/pulls?state=closed&sort=updated
-        GitHub-->>Server: Recently merged PRs
-        Server->>Server: Apply sync policy (open + last N merged)
-        Server->>DB: Upsert PR records
+    Note over JobLayer: MVP: executes inline<br/>Future: async worker
+
+    JobLayer->>DB: Get connected repos
+    loop Each connected repo
+        JobLayer->>GitHub: GET /repos/{o}/{r}/pulls?state=open
+        GitHub-->>JobLayer: Open PRs
+        JobLayer->>GitHub: GET /repos/{o}/{r}/pulls?state=closed&sort=updated
+        GitHub-->>JobLayer: Merged PRs
+        JobLayer->>JobLayer: Apply sync policy (open + last N merged)
+        JobLayer->>DB: Upsert PR records
     end
-    
-    Server-->>Browser: Sync result (created, updated, failed)
+    JobLayer-->>Server: SyncResult(created, updated, failed)
+    Server-->>Browser: Sync result
 ```
 
-### 8.4 AI Review Flow
+### ADR-006: Synchronization Strategy
+
+| | |
+|--|--|
+| **Context** | MergeFlow needs PR data from GitHub. Multiple strategies exist: manual trigger, scheduled polling, webhooks, event-driven. |
+| **Decision** | The synchronization architecture supports any trigger mechanism. The sync interface is: `SyncPullRequests(userId, repoIds?) → SyncResult`. The trigger is decoupled from the execution. |
+| **MVP Implementation** | Manual trigger only. User clicks "Sync." |
+| **Future Implementations** | (a) Scheduled polling via cron job. (b) GitHub webhooks via GitHub App. (c) Event-driven via GitHub App webhook events. None require changes to the sync interface or domain logic. |
+| **Consequences** | Sync logic is trigger-agnostic. Adding new triggers is additive — register a new event source that calls the same interface. |
+| **Reversible?** | N/A — the architecture is already general. Only the trigger changes. |
+
+### 8.4 AI Review
 
 ```mermaid
 sequenceDiagram
     actor User
     participant Browser
-    participant Server as MergeFlow Server
+    participant Server as MergeFlow
+    participant JobLayer as Job Layer
     participant DB as PostgreSQL
     participant GitHub as GitHub API
     participant AI as AI Provider
 
-    User->>Browser: Click "Analyze" on a PR
+    User->>Browser: Click "Analyze" on PR
     Browser->>Server: Command: AnalyzePR(prId)
     Server->>Server: Validate session
-    Server->>DB: Get PR metadata
-    Server->>DB: Verify repo is connected (BR-1, DI-R2)
-    Server->>GitHub: GET /repos/{owner}/{repo}/pulls/{number}/diff
-    GitHub-->>Server: Raw diff content
+    Server->>DB: Verify repo connected (BR-1, DI-R2)
+    Server->>JobLayer: Dispatch ReviewJob(userId, prId)
     
-    Server->>Server: Construct prompt (PR metadata + diff)
-    Server->>AI: POST /completions (structured output)
-    AI-->>Server: Summary + Risk Level + Reasoning
-    
-    Server->>Server: Validate AI response schema
-    Server->>DB: Insert immutable Review record
+    Note over JobLayer: MVP: executes inline<br/>Future: async worker
+
+    JobLayer->>DB: Get PR metadata
+    JobLayer->>GitHub: GET /.../pulls/{n}.diff
+    GitHub-->>JobLayer: Raw diff
+    JobLayer->>JobLayer: Construct prompt
+    JobLayer->>AI: POST /completions (structured output)
+    AI-->>JobLayer: {summary, riskLevel, reasoning}
+    JobLayer->>JobLayer: Validate response schema
+    JobLayer->>DB: INSERT Review (immutable)
+    JobLayer-->>Server: Review
     Server-->>Browser: Review (summary, risk, reasoning)
 ```
 
-### ADR-005: Synchronous AI Calls (MVP)
+### ADR-005: Asynchronous Review Jobs
 
 | | |
 |--|--|
-| **Context** | AI review takes 5–30 seconds. Options: synchronous HTTP, polling, or server-sent events. |
-| **Decision** | Synchronous request in MVP. Browser shows loading state. Server holds connection until AI responds. |
-| **Alternatives** | (a) Polling — client submits, then polls for result. More complex. (b) SSE/WebSocket — real-time push. Infrastructure overhead. |
-| **Consequences** | Simple implementation. 30s is within HTTP timeout defaults (60s). Browser must show clear loading state. If AI provider is slow, UX degrades. |
-| **Reversible?** | Yes. The AnalyzePR command interface stays identical. Only the transport changes (return job ID → poll for result). Domain layer untouched. |
+| **Context** | AI analysis takes 5–30 seconds. This is too long for a simple synchronous request in production but the MVP needs simplicity. |
+| **Decision** | The architectural contract is asynchronous. `AnalyzePR` dispatches a ReviewJob. The caller receives a job reference. The result is delivered when complete. |
+| **MVP Implementation** | The job dispatcher executes inline and returns the result synchronously. The caller doesn't know the difference — the interface is the same. |
+| **Future Implementation** | (a) Job written to DB, worker picks it up, client polls for result. (b) Server-Sent Events push result to client. Neither changes the domain logic or job interface. |
+| **Consequences** | UI must handle loading/pending state from day one. Job table in DB from day one (even if jobs complete instantly in MVP). Clean upgrade path. |
+| **Reversible?** | N/A — async is the architecture. Inline execution is the MVP optimization. |
 
-### 8.5 Dashboard Flow
+### 8.5 Dashboard
 
 ```mermaid
 sequenceDiagram
     actor User
     participant Browser
-    participant Server as MergeFlow Server
+    participant Server as MergeFlow
     participant DB as PostgreSQL
 
     User->>Browser: Navigate to Dashboard
     Browser->>Server: Query: GetDashboardData(userId)
     Server->>Server: Validate session
-    Server->>DB: Get connected repos for user
-    Server->>DB: Get PRs for connected repos
-    Server->>DB: Get latest review for each PR
-    Server->>Server: Aggregate (repos, PRs, reviews, risk levels)
-    Server-->>Browser: Dashboard data
-    Browser->>Browser: Render PRs grouped by risk level
+    Server->>DB: SELECT repos + PRs + latest reviews (joined query)
+    DB-->>Server: Aggregated result set
+    Server->>Server: Group by risk level, compute counts
+    Server-->>Browser: Dashboard payload
+    Browser->>Browser: Render risk-grouped PR list
 ```
 
 ---
@@ -364,210 +412,216 @@ sequenceDiagram
 
 Every request follows this pipeline:
 
-```
-Browser Request
-    │
-    ▼
-┌──────────────────┐
-│ 1. TLS Termination│
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│ 2. Session Check  │  → 401 if no valid session (except OAuth routes)
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│ 3. Input Validate │  → 400 if malformed
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│ 4. Domain Dispatch│  → Route to owning domain's command/query
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│ 5. Business Logic │  → Domain enforces invariants + business rules
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│ 6. Data Access    │  → DB queries, external API calls
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│ 7. Response       │  → Serialize result, set status code
-└──────────────────┘
+```mermaid
+flowchart TD
+    A[Browser Request] --> B[TLS Termination]
+    B --> C{Auth Required?}
+    C -->|No: OAuth routes| D[Route Handler]
+    C -->|Yes| E[Session Validation]
+    E -->|Invalid| F[401 Unauthorized]
+    E -->|Valid| G[Input Validation]
+    G -->|Invalid| H[400 Bad Request]
+    G -->|Valid| I[Domain Dispatch]
+    I --> J{Command or Query?}
+    J -->|Query| K[Execute Query]
+    J -->|Command| L{Long-running?}
+    L -->|No| M[Execute Inline]
+    L -->|Yes| N[Dispatch Job]
+    N --> O[Job Executor]
+    O --> P[Execute Domain Logic]
+    K --> Q[Response]
+    M --> Q
+    P --> Q
+    Q --> R[Serialize + Status Code]
 ```
 
-| Step | Failure | Response |
-|------|---------|----------|
-| 2 | Invalid/expired session | 401 Unauthorized |
-| 3 | Bad input | 400 Bad Request |
-| 5 | Business rule violation (e.g., repo not connected) | 403/409 with error detail |
-| 6 | GitHub API error | 502 Bad Gateway with retry guidance |
-| 6 | AI provider error | 503 Service Unavailable |
-| 6 | Database error | 500 Internal Server Error |
+### Error Responses
+
+| Stage | Failure | HTTP Status | Behavior |
+|-------|---------|------------|----------|
+| Session validation | Invalid/expired | 401 | Redirect to login |
+| Input validation | Malformed input | 400 | Error detail returned |
+| Domain dispatch | Business rule violation | 409 | Error with rule context |
+| Domain dispatch | Entity not found | 404 | Error with entity type |
+| Domain dispatch | Unauthorized access | 403 | No detail (prevent enumeration) |
+| External call | GitHub error | 502 | Upstream error, retry guidance |
+| External call | AI provider error | 502 | Upstream error, retry guidance |
+| External call | Timeout | 504 | Gateway timeout |
+| Database | Connection/query error | 500 | Generic server error |
 
 ---
 
-## 10. Background Processing Strategy
+## 10. Background Processing Architecture
 
-### ADR-007: No Background Workers in MVP
+### ADR-007: Background Processing as Architectural Capability
 
 | | |
 |--|--|
-| **Context** | Sync and AI analysis could benefit from async processing. But C7 says no distributed services, C8 says no assumptions until architecture review. |
-| **Decision** | All processing is inline (synchronous) in the MVP. No queues, no workers, no cron jobs. |
-| **Alternatives** | (a) In-process queue — adds complexity without horizontal scaling. (b) External queue (Redis/BullMQ) — violates C3 (PostgreSQL only). |
-| **Consequences** | Sync blocks the user's request. AI analysis blocks the user's request. Acceptable for MVP scale (one user, few repos). |
-| **Reversible?** | Yes. Domain commands are already defined. Wrapping SyncPullRequests or AnalyzePR in a job dispatcher requires no domain changes. |
+| **Context** | Sync and AI analysis are inherently long-running. The architecture must support async execution regardless of MVP implementation. |
+| **Decision** | Background processing is a first-class architectural capability. Every long-running operation is modeled as a Job with a defined lifecycle. |
+| **MVP Implementation** | Jobs execute inline within the request. The Job Dispatcher calls the Job Executor synchronously. No queue, no worker process. |
+| **Future Implementation** | (a) Job Dispatcher writes to a jobs table. (b) Worker process (same or separate) polls for pending jobs. (c) Job completion triggers notification. No domain logic changes. |
+| **Consequences** | Jobs table exists from day one. Job lifecycle (Pending → Running → Completed/Failed) tracked from day one. Clean async upgrade path. |
 
-### When to Revisit
+### Job Lifecycle
 
-Background processing becomes necessary when:
-- Sync takes > 60 seconds (many repos)
-- Multiple users trigger concurrent syncs
-- AI analysis needs to be batched
-- Webhook events need async processing (Phase 2)
+```mermaid
+stateDiagram-v2
+    [*] --> Pending : Job dispatched
+    Pending --> Running : Executor picks up
+    Running --> Completed : Success
+    Running --> Failed : Error
+    Failed --> [*] : Terminal
+    Completed --> [*] : Terminal
+```
 
-The extraction path:
-1. Add a jobs table to PostgreSQL (no new infrastructure)
-2. SyncPullRequests/AnalyzePR write a job record instead of executing inline
-3. A polling worker (same process or separate) picks up jobs
-4. Event-based notification when job completes
+### Job Types
+
+| Job Type | Domain | Input | Output | Idempotent? |
+|----------|--------|-------|--------|-------------|
+| `SyncJob` | Pull Request | userId, repoIds | SyncResult | ✅ Yes (upsert) |
+| `ReviewJob` | Review | userId, prId | Review | ⚠️ Append-only (new review each time) |
+
+### MVP vs Future Execution
+
+| Aspect | MVP (Inline) | Future (Async) |
+|--------|-------------|----------------|
+| Job dispatch | Synchronous function call | Write to jobs table |
+| Job execution | Same request, same process | Worker process polls jobs table |
+| Result delivery | Returned in HTTP response | Client polls or SSE push |
+| Concurrency | One job at a time per request | Multiple workers, configurable concurrency |
+| Failure handling | Error returned to caller | Job marked Failed, retry policy applied |
 
 ---
 
-## 11. Failure Handling Strategy
+## 11. Failure Architecture
 
-### 11.1 External Service Failures
+### 11.1 Failure Domains
 
-| Service | Failure | Strategy | User Impact |
-|---------|---------|----------|-------------|
-| **GitHub OAuth** | Down | Show error on login page. No retry. | Cannot sign in. |
-| **GitHub REST API** | 403 Rate Limited | Stop sync for that user. Show remaining reset time. | Partial sync. Retry later. |
-| **GitHub REST API** | 5xx / Timeout | Retry once with backoff. On second failure, abort. | Sync fails. Existing data preserved. |
-| **GitHub REST API** | 404 on repo/PR | Repo may have been deleted. Mark as inaccessible. | PR/repo removed from view. |
-| **AI Provider** | 429 Rate Limited | Return error immediately. User retries manually. | Analysis fails. No review saved. |
-| **AI Provider** | 5xx / Timeout | Retry once. On failure, return error. | Analysis fails. No review saved (DI-V4). |
-| **AI Provider** | Malformed response | Reject. Return validation error. | Analysis fails. |
-| **PostgreSQL** | Connection error | Application crashes. Process restart. | Full outage. |
+Each bounded context is a failure domain. Failures are **contained** within
+domain boundaries per the isolation matrix from `02-domain-analysis.md` §9.
 
-### 11.2 Idempotency
+| Principle | Rule |
+|-----------|------|
+| **Blast radius** | A domain failure must not corrupt another domain's data |
+| **Graceful degradation** | Downstream domains show stale data rather than crash |
+| **No partial writes** | Commands either fully succeed or fully fail. No half-synced state. |
+| **Explicit failure** | Every failure is surfaced to the caller with actionable context |
 
-| Operation | Idempotent? | How |
-|-----------|------------|-----|
-| SyncPullRequests | ✅ | Upsert by GitHub PR ID. Running twice = same result. |
-| ConnectRepository | ✅ | Duplicate connection prevented by unique constraint. |
-| AnalyzePR | ⚠️ Append-only | Each call creates a new review. Not idempotent by design (BR-4). User must intentionally re-analyze. |
+### 11.2 External Service Failure Matrix
 
-### 11.3 Circuit Breaker Pattern (Future)
+| Service | Failure | Detection | Strategy | User Impact |
+|---------|---------|-----------|----------|-------------|
+| GitHub OAuth | Down/5xx | HTTP error on callback | Show error. No retry. | Cannot sign in. |
+| GitHub API | 403 Rate Limited | `X-RateLimit-Remaining` header | Abort sync. Show reset time. | Partial sync. Wait. |
+| GitHub API | 5xx / Timeout | HTTP error / timeout | Retry once with backoff. Abort on second failure. | Sync fails. Data preserved. |
+| GitHub API | 404 | HTTP 404 | Repo/PR deleted. Mark inaccessible. | Item removed from view. |
+| AI Provider | 429 Rate Limited | HTTP 429 | Fail job immediately. User retries. | Analysis fails. |
+| AI Provider | 5xx / Timeout | HTTP error / timeout | Retry once. Fail job on second error. | Analysis fails. No review saved (DI-V4). |
+| AI Provider | Malformed response | Schema validation | Reject. Fail job. | Analysis fails. |
+| PostgreSQL | Down | Connection error | Application crashes. Restart. | Full outage. |
 
-Not implemented in MVP. When GitHub or AI provider has sustained failures,
-a circuit breaker would prevent repeated calls and fail fast. Implementation
-belongs in `09-background-processing.md` when async processing is introduced.
+### 11.3 Idempotency
+
+| Operation | Idempotent? | Mechanism |
+|-----------|------------|-----------|
+| SyncPullRequests | ✅ | Upsert by GitHub PR ID |
+| ConnectRepository | ✅ | Unique constraint on user+repo |
+| DisconnectRepository | ✅ | State transition is idempotent |
+| AnalyzePR | ⚠️ Append-only | By design (BR-4). Each call creates new review. |
+
+### 11.4 Data Consistency
+
+| Scenario | Strategy |
+|----------|----------|
+| Sync interrupted mid-repo | Successfully synced repos preserved. Failed repos reported. |
+| AI call fails after diff fetch | No review persisted. Diff is not cached (re-fetched on retry). |
+| Session expires during long sync | Job continues (it has the token). Result may not reach browser. |
+| Concurrent syncs for same repo | Second sync waits or is rejected. Upsert ensures no corruption. |
 
 ---
 
 ## 12. Deployment Architecture
 
-### MVP Deployment
+### MVP
 
 ```
-┌─────────────────────────────────┐
-│         Cloud Provider          │
-│                                 │
-│  ┌──────────────────────────┐   │
-│  │   MergeFlow Application  │   │
-│  │   (Single Instance)      │   │
-│  │   Port 3000              │   │
-│  └────────────┬─────────────┘   │
-│               │                 │
-│  ┌────────────▼─────────────┐   │
-│  │   PostgreSQL             │   │
-│  │   (Managed Instance)     │   │
-│  └──────────────────────────┘   │
-│                                 │
-└─────────────────────────────────┘
-         │              │
-    ┌────▼────┐   ┌─────▼─────┐
-    │ GitHub  │   │    AI     │
-    │  API    │   │ Provider  │
-    └─────────┘   └───────────┘
+┌──────────────────────────────────────┐
+│         Deployment Environment       │
+│                                      │
+│  ┌─────────────────────────────┐     │
+│  │  MergeFlow Application      │     │
+│  │  (Single Instance)           │     │
+│  │  Port 3000                   │     │
+│  └──────────────┬──────────────┘     │
+│                 │                    │
+│  ┌──────────────▼──────────────┐     │
+│  │  PostgreSQL (Managed)        │     │
+│  │  Single Instance             │     │
+│  └─────────────────────────────┘     │
+└──────────────────────────────────────┘
+          │                │
+     ┌────▼────┐     ┌─────▼─────┐
+     │ GitHub  │     │    AI     │
+     │  API    │     │ Provider  │
+     └─────────┘     └───────────┘
 ```
 
-### Environment Configuration
+### Environment Variables
 
 | Variable | Purpose | Sensitivity |
 |----------|---------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string | 🔴 Secret |
-| `GITHUB_CLIENT_ID` | OAuth app identifier | 🟡 Semi-sensitive |
-| `GITHUB_CLIENT_SECRET` | OAuth app secret | 🔴 Secret |
-| `AI_PROVIDER_API_KEY` | AI service authentication | 🔴 Secret |
-| `AI_PROVIDER_TYPE` | Which AI provider to use | 🟢 Public |
-| `SESSION_SECRET` | Session encryption key | 🔴 Secret |
-| `APP_URL` | Public URL for OAuth callbacks | 🟢 Public |
+| `DATABASE_URL` | PostgreSQL connection | 🔴 Secret |
+| `GITHUB_CLIENT_ID` | OAuth identifier | 🟡 Config |
+| `GITHUB_CLIENT_SECRET` | OAuth secret | 🔴 Secret |
+| `AI_PROVIDER_API_KEY` | AI authentication | 🔴 Secret |
+| `AI_PROVIDER_TYPE` | Provider selection | 🟢 Config |
+| `SESSION_SECRET` | Cookie encryption key | 🔴 Secret |
+| `APP_URL` | Public URL (OAuth callback) | 🟢 Config |
 
-All secrets via environment variables. Never in code. Never in version control.
+All secrets via environment variables. Never in source. Never committed.
 
 ---
 
 ## 13. Scaling Strategy
 
-MVP is single-instance. This section documents the growth path.
+| Phase | Trigger | Action |
+|-------|---------|--------|
+| **0 (MVP)** | Baseline | Single instance, single DB, inline jobs |
+| **1** | Dashboard > 2s | Database indexes, query optimization |
+| **2** | Sync > 60s | Move jobs to async (DB-backed queue, same process) |
+| **3** | Concurrent AI > 5 | Separate worker process for ReviewJobs |
+| **4** | Users > 100 | Horizontal app instances + session store |
+| **5** | Total PRs > 10k | Read replicas, connection pooling |
 
-### 13.1 Vertical Scaling (Phase 1)
-
-Increase instance resources (CPU, RAM). Effective until:
-- Database connections become the bottleneck
-- Single-threaded event loop limits concurrent AI calls
-
-### 13.2 Horizontal Scaling (Phase 2+)
-
-| Component | Scaling Path | Prerequisite |
-|-----------|-------------|--------------|
-| **Application** | Multiple instances behind load balancer | Stateless sessions (JWT or shared session store) |
-| **Database** | Read replicas for dashboard queries | Connection pooling, query routing |
-| **Sync** | Background worker pool | Job queue (PostgreSQL-backed initially) |
-| **AI Analysis** | Async job processing | Job queue, webhook for completion |
-
-### 13.3 When Each Scaling Step Is Needed
-
-| Trigger | Action |
-|---------|--------|
-| Dashboard > 2s under load | Add database indexes, optimize queries |
-| Sync > 60s consistently | Move to background processing |
-| Concurrent AI calls > 5 | Queue AI requests |
-| Users > 100 | Session store, horizontal app instances |
-| Repos > 1000 total | Read replicas, connection pooling |
+Each phase requires only configuration or additive changes. No domain logic rewrites.
 
 ---
 
 ## 14. Architectural Tradeoffs
 
-| Decision | What We Gain | What We Give Up |
-|----------|-------------|-----------------|
-| Monolith | Simplicity, fast iteration, easy debugging | Independent deployment per domain |
-| Synchronous AI | Simple request model | UX degrades for slow AI responses |
-| No background workers | No queue infrastructure | Cannot process long tasks asynchronously |
-| Single database | Simple operations, ACID transactions | Scaling ceiling for read-heavy workloads |
-| RPC over REST | Type safety, productivity | Not suitable for external API consumers |
-| OAuth over GitHub App | Simple auth flow | Lower rate limits, no webhooks |
-| Session over JWT | Revocable sessions | Database lookup per request |
+| Decision | Gain | Cost |
+|----------|------|------|
+| Monolith | Simplicity, fast iteration | No independent domain deployment |
+| Async job interface (inline MVP) | Clean upgrade path | Slight abstraction overhead in MVP |
+| Single database | ACID, simple ops | Scaling ceiling for reads |
+| RPC over REST | Type safety | Not suitable for external consumers |
+| OAuth over GitHub App | Simple auth | Lower rate limits, no webhooks |
+| Sessions over JWT | Revocable auth | DB lookup per request |
 
 ---
 
 ## 15. ADR Index
 
-| ADR | Title | Decision | Document |
-|-----|-------|----------|----------|
-| ADR-001 | System Architecture | Monolithic full-stack application | §3 |
-| ADR-001b | API Style | RPC-style over REST | §4 |
-| ADR-003 | Authentication | Session-based with encrypted cookies | §8.1 |
-| ADR-004 | GitHub Integration | OAuth App over GitHub App for MVP | §7 |
-| ADR-005 | AI Processing Model | Synchronous calls in MVP | §8.4 |
-| ADR-006 | Sync Strategy | User-triggered polling, no webhooks | §8.3 |
-| ADR-007 | Background Processing | No workers in MVP, inline processing | §10 |
-| ADR-002 | Database Design | 🔲 Pending | `04-database-design.md` |
-| ADR-008 | Multi-tenancy Strategy | 🔲 Pending | `04-database-design.md` |
+| ADR | Title | Status |
+|-----|-------|--------|
+| ADR-001 | Monolithic Architecture | ✅ Approved (§5) |
+| ADR-001b | RPC-Style API | ✅ Approved (§5) |
+| ADR-003 | Server-Side Sessions | ✅ Approved (§8.1) |
+| ADR-004 | GitHub OAuth App (MVP) | ✅ Approved (§4) |
+| ADR-005 | Asynchronous Review Jobs | ✅ Approved (§8.4) |
+| ADR-006 | Synchronization Strategy | ✅ Approved (§8.3) |
+| ADR-007 | Background Processing Capability | ✅ Approved (§10) |
 
 ---
 
@@ -575,44 +629,45 @@ Increase instance resources (CPU, RAM). Effective until:
 
 | Risk | Probability | Impact | Mitigation |
 |------|------------|--------|------------|
-| AI calls exceed 30s regularly | Medium | UX degradation | Monitor latency. Move to async if P95 > 20s. |
-| GitHub rate limit hit during sync | Low (MVP scale) | Sync fails | Track remaining quota. Abort early if low. |
-| Large diffs exceed AI context window | Medium | Analysis fails | Truncation strategy in `08-ai-system.md`. |
-| Session secret compromised | Low | Full auth bypass | Rotate secret. Invalidate all sessions. |
-| Single database as bottleneck | Low (MVP scale) | Slow queries | Index strategy in `04-database-design.md`. |
+| AI latency > 30s regularly | Medium | UX degrades | Async jobs + loading UI. Move to worker when pattern emerges. |
+| GitHub rate limit during sync | Low (MVP) | Sync fails | Track `X-RateLimit-Remaining`. Abort early if low. |
+| Large diffs exceed context window | Medium | Analysis fails | Strategy in `08-ai-system.md`. |
+| Session secret compromise | Low | Full auth bypass | Secret rotation. Mass session invalidation. |
 
 ---
 
-## 17. Open Questions Resolved
+## 17. Open Questions
+
+### Resolved
 
 | ID | Question | Resolution |
 |----|----------|------------|
-| OQ-5 | Is sync policy N configurable in UI? | No. Environment/config only for MVP. UI settings add complexity. |
-| OQ-6 | Sync vs async communication? | Synchronous for MVP. Events for side effects only. |
-| OQ-7 | Dashboard aggregation strategy? | Database joins. Single query with joined data. No separate calls. |
+| OQ-5 | Sync policy N configurable in UI? | No. Config-only for MVP. |
+| OQ-6 | Sync vs async communication? | Async interface, inline MVP execution. |
+| OQ-7 | Dashboard aggregation? | Joined DB query. |
 
-## 18. Open Questions Remaining
+### Remaining
 
 | ID | Question | Resolved In |
 |----|----------|-------------|
 | OQ-1 | Data retention on disconnect? | `04-database-design.md` |
-| OQ-2 | Handling oversized diffs? | `08-ai-system.md` |
-| OQ-9 | Connection pooling strategy? | `04-database-design.md` |
-| OQ-10 | Session storage strategy? | `10-security.md` |
+| OQ-2 | Oversized diffs? | `08-ai-system.md` |
+| OQ-9 | Connection pooling? | `04-database-design.md` |
+| OQ-10 | Session storage details? | `10-security.md` |
 
 ---
 
-## 19. References
+## 18. References
 
 | Document | Relevance |
 |----------|-----------|
-| [`00-project-overview.md`](./00-project-overview.md) | Constraints C3, C7, C8 govern architecture |
-| [`01-product-specification.md`](./01-product-specification.md) | NFRs define performance targets |
+| [`00-project-overview.md`](./00-project-overview.md) | Constraints C3, C7, C8 |
+| [`01-product-specification.md`](./01-product-specification.md) | NFRs, performance targets |
 | [`02-domain-analysis.md`](./02-domain-analysis.md) | Domain boundaries, commands, queries, events |
 
 ---
 
-*This document answers "how does MergeFlow work?" Every subsequent document
-operates within this architecture.*
+*This document answers "how does MergeFlow work?" Implementation operates
+within this architecture.*
 
 *Next: [`docs/04-database-design.md`](./04-database-design.md)*
