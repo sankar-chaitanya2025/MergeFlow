@@ -2,6 +2,7 @@ import { relations } from "drizzle-orm";
 import {
   boolean,
   index,
+  integer,
   pgTableCreator,
   primaryKey,
   timestamp,
@@ -147,6 +148,50 @@ export const repositories = createTable(
   ],
 );
 
-export const repositoriesRelations = relations(repositories, ({ one }) => ({
+export const repositoriesRelations = relations(repositories, ({ one, many }) => ({
   user: one(users, { fields: [repositories.userId], references: [users.id] }),
+  pullRequests: many(pullRequests),
+}));
+
+export const pullRequests = createTable(
+  "pull_request",
+  (d) => ({
+    id: d
+      .varchar("id", { length: 255 })
+      .notNull()
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    repositoryId: d
+      .varchar("repository_id", { length: 255 })
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    githubPrNumber: d.integer("github_pr_number").notNull(),
+    title: d.varchar("title", { length: 255 }).notNull(),
+    authorUsername: d.varchar("author_username", { length: 255 }).notNull(),
+    status: d.varchar("status", { length: 255 }).notNull(),
+    sourceBranch: d.varchar("source_branch", { length: 255 }).notNull(),
+    targetBranch: d.varchar("target_branch", { length: 255 }).notNull(),
+    linesAdded: d.integer("lines_added").notNull(),
+    linesRemoved: d.integer("lines_removed").notNull(),
+    filesChanged: d.integer("files_changed").notNull(),
+    githubCreatedAt: d.timestamp("github_created_at", { withTimezone: true }).notNull(),
+    githubUpdatedAt: d.timestamp("github_updated_at", { withTimezone: true }).notNull(),
+    githubMergedAt: d.timestamp("github_merged_at", { withTimezone: true }),
+    syncedAt: d
+      .timestamp("synced_at", { withTimezone: true })
+      .notNull()
+      .$defaultFn(() => /* @__PURE__ */ new Date()),
+  }),
+  (t) => [
+    unique("repo_pr_number_unique_idx").on(t.repositoryId, t.githubPrNumber),
+    index("pr_repo_id_status_idx").on(t.repositoryId, t.status),
+    index("pr_github_updated_at_idx").on(t.githubUpdatedAt),
+  ],
+);
+
+export const pullRequestsRelations = relations(pullRequests, ({ one }) => ({
+  repository: one(repositories, {
+    fields: [pullRequests.repositoryId],
+    references: [repositories.id],
+  }),
 }));
