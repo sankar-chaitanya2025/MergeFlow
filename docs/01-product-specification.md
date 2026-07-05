@@ -556,26 +556,30 @@ flowchart TD
 
 ## 16. Requirements Traceability
 
-| Requirement | Type | Domain | Priority | Features | Stories | Invariants | Business Rules |
-|-------------|------|--------|----------|----------|---------|------------|---------------|
-| UFR-1 | User | Auth | Must | F1 | US-1 | INV-7 | BR-7 |
-| UFR-2 | User | Repo | Must | F2 | US-2 | INV-7 | BR-5 |
-| UFR-3 | User | Repo | Must | F2 | US-3 | — | BR-1 |
-| UFR-4 | User | Repo | Must | F2 | US-4 | — | BR-6 |
-| UFR-5 | User | PR | Must | F3 | US-5 | INV-1,6 | BR-8 |
-| UFR-6 | User | Review | Must | F4,F5 | US-6 | INV-4,5,8 | BR-1,2,4,8 |
-| UFR-7 | User | Review | Must | F4,F5 | US-7 | INV-4,5 | BR-2 |
-| UFR-8 | User | Review | Should | F6 | US-8 | INV-5,8 | BR-4,9 |
-| UFR-9 | User | Dashboard | Must | F7 | US-9 | INV-7 | BR-7 |
-| UFR-10 | User | PR | Should | F3 | US-10 | INV-1 | BR-10 |
-| SFR-1 | System | Auth | Must | F1 | — | INV-7 | BR-7 |
-| SFR-2 | System | Auth | Must | F1 | — | — | — |
-| SFR-3 | System | Repo | Must | F2 | — | — | BR-1,5 |
-| SFR-4 | System | PR | Must | F3 | — | INV-1 | BR-3 |
-| SFR-5 | System | Review | Must | F4,F5 | — | INV-4,5 | BR-2,4 |
-| SFR-6 | System | Review | Must | F6 | — | INV-8 | BR-4,9 |
-| SFR-7 | System | Review | Should | F6 | — | INV-5 | — |
-| SFR-8 | System | PR | Must | F3 | — | — | BR-10 |
+> **Note:** System Functional Requirements (SFRs) do not map directly to user
+> stories. They support User-Facing Requirements (UFRs), which in turn map to
+> stories. The "Supports" column traces this indirect relationship.
+
+| Requirement | Type | Domain | Priority | Features | Stories | Supports | Invariants | Business Rules |
+|-------------|------|--------|----------|----------|---------|----------|------------|---------------|
+| UFR-1 | User | Auth | Must | F1 | US-1 | — | INV-7 | BR-7 |
+| UFR-2 | User | Repo | Must | F2 | US-2 | — | INV-7 | BR-5 |
+| UFR-3 | User | Repo | Must | F2 | US-3 | — | — | BR-1 |
+| UFR-4 | User | Repo | Must | F2 | US-4 | — | — | BR-6 |
+| UFR-5 | User | PR | Must | F3 | US-5 | — | INV-1,6 | BR-8 |
+| UFR-6 | User | Review | Must | F4,F5 | US-6 | — | INV-4,5,8 | BR-1,2,4,8 |
+| UFR-7 | User | Review | Must | F4,F5 | US-7 | — | INV-4,5 | BR-2 |
+| UFR-8 | User | Review | Should | F6 | US-8 | — | INV-5,8 | BR-4,9 |
+| UFR-9 | User | Dashboard | Must | F7 | US-9 | — | INV-7 | BR-7 |
+| UFR-10 | User | PR | Should | F3 | US-10 | — | INV-1 | BR-10 |
+| SFR-1 | System | Auth | Must | F1 | — | UFR-1 | INV-7 | BR-7 |
+| SFR-2 | System | Auth | Must | F1 | — | UFR-1,2,5 | INV-2,3 | — |
+| SFR-3 | System | Repo | Must | F2 | — | UFR-3,4 | — | BR-1,5 |
+| SFR-4 | System | PR | Must | F3 | — | UFR-5,10 | INV-1,2,3 | BR-3 |
+| SFR-5 | System | Review | Must | F4,F5 | — | UFR-6 | INV-4,5 | BR-2,4 |
+| SFR-6 | System | Review | Must | F6 | — | UFR-6,7,8 | INV-8 | BR-4,9 |
+| SFR-7 | System | Review | Should | F6 | — | UFR-7,8 | INV-5 | — |
+| SFR-8 | System | PR | Must | F3 | — | UFR-5,10 | — | BR-10 |
 
 ---
 
