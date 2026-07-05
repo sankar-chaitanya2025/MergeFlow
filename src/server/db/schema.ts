@@ -1,5 +1,13 @@
 import { relations } from "drizzle-orm";
-import { index, pgTableCreator, primaryKey } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  index,
+  pgTableCreator,
+  primaryKey,
+  timestamp,
+  unique,
+  varchar,
+} from "drizzle-orm/pg-core";
 import { type AdapterAccount } from "next-auth/adapters";
 
 /**
@@ -50,6 +58,7 @@ export const users = createTable("user", (d) => ({
 
 export const usersRelations = relations(users, ({ many }) => ({
   accounts: many(accounts),
+  repositories: many(repositories),
 }));
 
 export const accounts = createTable(
@@ -106,3 +115,38 @@ export const verificationTokens = createTable(
   }),
   (t) => [primaryKey({ columns: [t.identifier, t.token] })],
 );
+
+export const repositories = createTable(
+  "repository",
+  (d) => ({
+    id: d
+      .varchar("id", { length: 255 })
+      .notNull()
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: d
+      .varchar("user_id", { length: 255 })
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    githubRepoId: d.varchar("github_repo_id", { length: 255 }).notNull(),
+    fullName: d.varchar("full_name", { length: 255 }).notNull(),
+    owner: d.varchar("owner", { length: 255 }).notNull(),
+    name: d.varchar("name", { length: 255 }).notNull(),
+    isPrivate: d.boolean("is_private").notNull().default(false),
+    language: d.varchar("language", { length: 255 }),
+    connectionStatus: d.varchar("connection_status", { length: 255 }).notNull().default("CONNECTED"),
+    connectedAt: d
+      .timestamp("connected_at", { withTimezone: true })
+      .$defaultFn(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    lastSyncedAt: d.timestamp("last_synced_at", { withTimezone: true }),
+  }),
+  (t) => [
+    unique("user_repo_unique_idx").on(t.userId, t.githubRepoId),
+    index("repo_user_id_status_idx").on(t.userId, t.connectionStatus),
+  ],
+);
+
+export const repositoriesRelations = relations(repositories, ({ one }) => ({
+  user: one(users, { fields: [repositories.userId], references: [users.id] }),
+}));
