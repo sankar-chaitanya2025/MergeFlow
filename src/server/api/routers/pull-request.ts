@@ -7,6 +7,7 @@ import { accounts, repositories } from "~/server/db/schema";
 
 // Configuration for sync policy (enforces SFR-8)
 const SYNC_CLOSED_PR_COUNT = 10;
+const SYNC_OPEN_PR_COUNT = 100;
 
 interface GitHubPR {
   id: number;
@@ -36,7 +37,7 @@ export const pullRequestRouter = createTRPCRouter({
         repositoryIds: z.array(z.string()).optional(),
       })
     )
-    .mutation(async ({ ctx, input }) => {
+    .query(async ({ ctx, input }) => {
       // 1. Fetch user access token
       const account = await ctx.db.query.accounts.findFirst({
         where: eq(accounts.userId, ctx.session.user.id),
@@ -80,7 +81,7 @@ export const pullRequestRouter = createTRPCRouter({
 
           // Fetch Open PRs
           const openRes = await fetch(
-            `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls?state=open&per_page=100`,
+            `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls?state=open&per_page=${SYNC_OPEN_PR_COUNT}`,
             { headers }
           );
 
