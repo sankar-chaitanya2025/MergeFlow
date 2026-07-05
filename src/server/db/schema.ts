@@ -189,9 +189,45 @@ export const pullRequests = createTable(
   ],
 );
 
-export const pullRequestsRelations = relations(pullRequests, ({ one }) => ({
+export const pullRequestsRelations = relations(pullRequests, ({ one, many }) => ({
   repository: one(repositories, {
     fields: [pullRequests.repositoryId],
     references: [repositories.id],
+  }),
+  reviews: many(reviews),
+}));
+
+export const reviews = createTable(
+  "review",
+  (d) => ({
+    id: d
+      .varchar("id", { length: 255 })
+      .notNull()
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    pullRequestId: d
+      .varchar("pull_request_id", { length: 255 })
+      .notNull()
+      .references(() => pullRequests.id, { onDelete: "cascade" }),
+    riskLevel: d.varchar("risk_level", { length: 255 }).notNull(),
+    summary: d.text("summary").notNull(),
+    riskReasoning: d.text("risk_reasoning").notNull(),
+    aiProvider: d.varchar("ai_provider", { length: 255 }).notNull(),
+    modelVersion: d.varchar("model_version", { length: 255 }).notNull(),
+    metadata: d.jsonb("metadata"),
+    createdAt: d
+      .timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .$defaultFn(() => /* @__PURE__ */ new Date()),
+  }),
+  (t) => [
+    index("review_pr_id_created_at_idx").on(t.pullRequestId, t.createdAt),
+  ]
+);
+
+export const reviewsRelations = relations(reviews, ({ one }) => ({
+  pullRequest: one(pullRequests, {
+    fields: [reviews.pullRequestId],
+    references: [pullRequests.id],
   }),
 }));
